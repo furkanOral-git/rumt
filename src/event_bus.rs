@@ -15,7 +15,9 @@ pub trait RuntimeEventListenerHandlerArg: Any + Send + Sync {
 }
 
 impl<T: Any + Send + Sync> RuntimeEventListenerHandlerArg for T {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl dyn RuntimeEventListenerHandlerArg {
@@ -49,28 +51,32 @@ pub struct RuntimeEventBus {
 
 impl RuntimeEventBus {
     pub(crate) fn new() -> Self {
-        Self { pairs: HashMap::new() }
+        Self {
+            pairs: HashMap::new(),
+        }
     }
 
     pub fn add_listener(&mut self, event: RuntimeEvent, listener: RuntimeEventListener) {
         self.pairs.entry(event).or_insert(vec![]).push(listener);
     }
 
-    pub(crate) async fn emit(
-        &mut self,
-        event: &RuntimeEvent,
-        arg: &dyn RuntimeEventListenerHandlerArg,
-    ) {
-        if let Some(listeners) = self.pairs.get(event) {
-            for listener in listeners {
-                (listener.handler)(arg).await;
-            }
-        }
+    pub(crate) async fn emit<T: Send + Sync + 'static>(&mut self, event: &RuntimeEvent, arg: T) {
+    // 1. Veriyi mülkiyetiyle alıp tek bir Arc içine koyuyoruz (Sıfır kopya başlangıcı)
+    let shared_payload = std::sync::Arc::new(arg);
 
-        if let RuntimeEvent::OnceTriggered { .. } = event {
-            self.pairs.remove(event);
+    if let Some(listeners) = self.pairs.get(event) {
+        for listener in listeners {
+            // 2. Arc<T>'yi &dyn RuntimeEventListenerHandlerArg olarak geçiyoruz.
+            // Makro tarafı bunu downcast::<Arc<T>>() ile karşılayacak.
+            (listener.handler)(&shared_payload).await;
         }
     }
+
+    // 3. OnceTriggered kontrolü: Eğer event bir kez tetiklenecekse tüm listeyi temizle.
+    if let RuntimeEvent::OnceTriggered { .. } = event {
+        self.pairs.remove(event);
+    }
+}
 
     pub fn remove_all_listeners_by_tag(&mut self, tag: &str) {
         for listeners in self.pairs.values_mut() {
@@ -91,27 +97,17 @@ pub trait RuntimeEventListenerInitializer: Sized {
 
 // --- Makro ---
 
-
-
 #[macro_export]
 macro_rules! event_handlers {
-    // 1. Kol: Metot isminden önce 'async' yazılmadıysa burası çalışır
-    (
-        $struct_name:ty;
-        $( $event_variant:expr => $handler_fn:ident : $arg_type:ty ),* $(,)?
-    ) => {
-        $crate::event_handlers!(@impl $struct_name; $( $event_variant => $handler_fn : $arg_type ),*);
+    // Giriş Kolları
+    ($struct_name:ty; $($event:expr => $handler:ident : $arg:ty),* $(,)?) => {
+        $crate::event_handlers!(@impl $struct_name; $($event => $handler : $arg),*);
+    };
+    ($struct_name:ty; $($event:expr => async $handler:ident : $arg:ty),* $(,)?) => {
+        $crate::event_handlers!(@impl $struct_name; $($event => $handler : $arg),*);
     };
 
-    // 2. Kol: Metot isminden önce 'async' yazıldıysa burası çalışır
-    (
-        $struct_name:ty;
-        $( $event_variant:expr => async $handler_fn:ident : $arg_type:ty ),* $(,)?
-    ) => {
-        $crate::event_handlers!(@impl $struct_name; $( $event_variant => $handler_fn : $arg_type ),*);
-    };
-
-    // 3. İç Uygulama (Mantığın merkezi)
+    // Merkezi Uygulama
     (@impl $struct_name:ty; $( $event_variant:expr => $handler_fn:ident : $arg_type:ty ),*) => {
         impl $crate::event_bus::RuntimeEventListenerTrait for $struct_name {
             fn dispose_self(&self) -> $crate::futures::future::BoxFuture<'static, ()> {
@@ -137,16 +133,18 @@ macro_rules! event_handlers {
                             let event = $event_variant;
 
                             let handler = std::boxed::Box::new(move |args: &dyn $crate::event_bus::RuntimeEventListenerHandlerArg| {
+                                
                                 let arc_inner = std::sync::Arc::clone(&arc_clone);
                                 
-                                // Lifetime hatasını aşmak için: downcast + clone
-                                // Bu işlem için $arg_type'ın Clone olması gerekir.
-                                let maybe_owned = args.downcast::<$arg_type>().map(|a| a.clone());
+                                // Bus içinde Arc içine alınan veriyi burada downcast ediyoruz.
+                                // Sadece pointer clone edilir, asıl veri kopyalanmaz.
+                                let maybe_shared = args.downcast::<std::sync::Arc<$arg_type>>().map(|a| std::sync::Arc::clone(a));
                                 
                                 std::boxed::Box::pin(async move {
-                                    if let Some(owned_data) = maybe_owned {
-                                        // Hem sync hem async metotlar .await ile burada çalışır
-                                        arc_inner.$handler_fn(&owned_data).await;
+                                    if let Some(shared_data) = maybe_shared {
+                                        // shared_data bir Arc<T>'dir. 
+                                        // Deref sayesinde handler metodun &T alıyorsa sorunsuz çalışır.
+                                        arc_inner.$handler_fn(&shared_data).await;
                                     }
                                 }) as $crate::futures::future::BoxFuture<'static, ()>
                             });

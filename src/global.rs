@@ -10,7 +10,7 @@ static RUNTIME_MODULE_ENV: Lazy<StdMutex<Option<RuntimeModuleEnv<Locked>>>> =
     Lazy::new(|| StdMutex::new(None));
 static RUNTIME_EVENT_BUS: Lazy<Mutex<Option<RuntimeEventBus>>> = Lazy::new(|| Mutex::new(None));
 ///
-pub async  fn init_runtime(env: RuntimeModuleEnv<Locked>) {
+pub async fn init_runtime(env: RuntimeModuleEnv<Locked>) {
     let mut guard = RUNTIME_MODULE_ENV.lock().unwrap();
     *guard = Some(env);
     let mut event_buss_guard = RUNTIME_EVENT_BUS.lock().await;
@@ -28,7 +28,10 @@ where
     let bus = guard.as_mut().expect("RuntimeEventBus Not initialized!");
     f(bus)
 }
-pub async fn emit_event(event: RuntimeEvent, arg: &dyn RuntimeEventListenerHandlerArg) {
+pub async fn emit_event<T: Send + Sync + 'static>(
+    event: RuntimeEvent,
+    arg: T,
+) {
     let mut guard = RUNTIME_EVENT_BUS.lock().await;
 
     if let Some(bus) = guard.as_mut() {

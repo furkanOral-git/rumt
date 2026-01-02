@@ -31,7 +31,7 @@ async fn test_event_bus_flow() {
     };
 
     println!("Event yayılıyor...");
-    rumt::global::emit_event(event, &payload).await;
+    rumt::global::emit_event::<TestPayload>(event, payload).await;
 
     // IV. Doğrulama
     // Event bus asenkron çalıştığı için verinin gelmiş olması gerekir
