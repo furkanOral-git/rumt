@@ -19,14 +19,16 @@ impl RuntimeModuleEnv<Unlocked> {
     /// ```
     ///
     /// // 1. Builder'ı Unlocked state ile başlatın
-    /// let env = RuntimeModuleEnv::<Unlocked>::new()
-    ///     .add_app_info("MyApp", "MyCompany", "com")
-    ///     .insert_path("db", "/some/path/to/db.sqlite")
-    ///     .lock_env(); // 2. Locked state'e geçiş
-    ///
-    /// // 3. Global runtime state'i başlatın
-    /// init_runtime(env);
-    ///
+    /// async fn setup_runtime() {
+    /// 
+    /// let mut env_builder = rumt::env::RuntimeModuleEnv::<Unlocked>::new();
+    /// 
+    /// env_builder.add_app_info("MyApp", "MyCompany", "com");
+    /// env_builder.insert_path("db", "/tmp/test.db");
+    /// 
+    /// let locked_env = env_builder.lock_env();
+    /// init_runtime(locked_env).await;
+    /// 
     /// // 4. Daha sonra global runtime'a erişin
     /// let runtime_env_guard = runtime_env();
     /// let runtime_env = runtime_env_guard.as_ref().unwrap();
@@ -41,17 +43,17 @@ impl RuntimeModuleEnv<Unlocked> {
         }
     }
 
-    pub fn insert_path(&mut self, name: impl Into<String>, path: impl Into<String>) -> &mut Self {
+    pub fn insert_path(mut self, name: impl Into<String>, path: impl Into<String>) -> Self {
         self.paths.insert(name.into(), path.into());
         self
     }
 
     pub fn add_app_info(
-        &mut self,
+        mut self,
         name: impl Into<String>,
         company: impl Into<String>,
         qualifier: impl Into<String>,
-    ) -> &mut Self {
+    ) -> Self {
         self.app = Some(AppInfo {
             app_name: name.into(),
             company: company.into(),
@@ -60,7 +62,7 @@ impl RuntimeModuleEnv<Unlocked> {
         self
     }
 
-    pub fn lock_env(self) -> RuntimeModuleEnv<Locked> {
+    pub fn lock_env(mut self) -> RuntimeModuleEnv<Locked> {
         let app = self.app.expect("AppInfo must be set before locking!");
         RuntimeModuleEnv {
             state: PhantomData,
