@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::{collections::HashMap, marker::PhantomData};
 
 use crate::app_info::AppInfo;

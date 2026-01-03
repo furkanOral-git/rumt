@@ -1,4 +1,3 @@
-use crate::global::with_event_bus_mut;
 use futures::future::BoxFuture;
 use std::{any::Any, collections::HashMap, sync::Arc};
 
@@ -44,9 +43,9 @@ impl RuntimeEventListener {
 }
 
 // --- Event Bus Merkezi ---
-
+#[doc(hidden)] // Kullanıcı dökümanında ve kod tamamlamada gözükmez
 pub struct RuntimeEventBus {
-    pairs: HashMap<RuntimeEvent, Vec<RuntimeEventListener>>,
+    pub(crate) pairs: HashMap<RuntimeEvent, Vec<RuntimeEventListener>>,
 }
 
 impl RuntimeEventBus {
@@ -56,27 +55,39 @@ impl RuntimeEventBus {
         }
     }
 
+    /// Makronun kütüphane dışından erişebilmesi için teknik olarak pub olmalı.
+    /// Ancak dökümantasyonda gizleyerek kullanıcıdan saklıyoruz.
+    #[doc(hidden)]
+    pub async fn with_instance_mut<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        // Global'deki asenkron Mutex'i kilitliyoruz
+        let mut guard = crate::global::RUNTIME_EVENT_BUS.lock().await;
+        let bus = guard.as_mut().expect("RuntimeEventBus Not initialized! Call init_runtime first.");
+        f(bus)
+    }
+
     pub fn add_listener(&mut self, event: RuntimeEvent, listener: RuntimeEventListener) {
         self.pairs.entry(event).or_insert(vec![]).push(listener);
     }
 
-    pub(crate) async fn emit<T: Send + Sync + 'static>(&mut self, event: &RuntimeEvent, arg: T) {
-    // 1. Veriyi mülkiyetiyle alıp tek bir Arc içine koyuyoruz (Sıfır kopya başlangıcı)
-    let shared_payload = std::sync::Arc::new(arg);
+    pub async fn emit<T: Send + Sync + 'static>(&mut self, event: &RuntimeEvent, arg: T) {
+        // Sıfır kopya: Veri bir kez Arc içine alınır
+        let shared_payload = std::sync::Arc::new(arg);
 
-    if let Some(listeners) = self.pairs.get(event) {
-        for listener in listeners {
-            // 2. Arc<T>'yi &dyn RuntimeEventListenerHandlerArg olarak geçiyoruz.
-            // Makro tarafı bunu downcast::<Arc<T>>() ile karşılayacak.
-            (listener.handler)(&shared_payload).await;
+        if let Some(listeners) = self.pairs.get(event) {
+            for listener in listeners {
+                // Her handler'a verinin pointer'ı (Arc) gönderilir
+                (listener.handler)(&shared_payload).await;
+            }
+        }
+
+        // Tek seferlik eventlerin temizlenmesi
+        if let RuntimeEvent::OnceTriggered { .. } = event {
+            self.pairs.remove(event);
         }
     }
-
-    // 3. OnceTriggered kontrolü: Eğer event bir kez tetiklenecekse tüm listeyi temizle.
-    if let RuntimeEvent::OnceTriggered { .. } = event {
-        self.pairs.remove(event);
-    }
-}
 
     pub fn remove_all_listeners_by_tag(&mut self, tag: &str) {
         for listeners in self.pairs.values_mut() {
@@ -99,7 +110,7 @@ pub trait RuntimeEventListenerInitializer: Sized {
 
 #[macro_export]
 macro_rules! event_handlers {
-    // Giriş Kolları
+    // Giriş kolları: Async veya normal yazımı destekler
     ($struct_name:ty; $($event:expr => $handler:ident : $arg:ty),* $(,)?) => {
         $crate::event_handlers!(@impl $struct_name; $($event => $handler : $arg),*);
     };
@@ -107,14 +118,15 @@ macro_rules! event_handlers {
         $crate::event_handlers!(@impl $struct_name; $($event => $handler : $arg),*);
     };
 
-    // Merkezi Uygulama
+    // Merkezi Uygulama Mantığı
     (@impl $struct_name:ty; $( $event_variant:expr => $handler_fn:ident : $arg_type:ty ),*) => {
         impl $crate::event_bus::RuntimeEventListenerTrait for $struct_name {
             fn dispose_self(&self) -> $crate::futures::future::BoxFuture<'static, ()> {
-                let tag = std::stringify!($struct_name).to_string();
+                let tag = std::stringify!($struct_name);
                 std::boxed::Box::pin(async move {
-                    $crate::global::with_event_bus_mut(|bus| {
-                        bus.remove_all_listeners_by_tag(&tag);
+                    // Dispose sırasında global bus'a güvenli asenkron erişim
+                    $crate::event_bus::RuntimeEventBus::with_instance_mut(|bus| {
+                        bus.remove_all_listeners_by_tag(tag);
                     }).await;
                 })
             }
@@ -127,23 +139,20 @@ macro_rules! event_handlers {
                 let struct_tag = std::stringify!($struct_name);
 
                 std::boxed::Box::pin(async move {
-                    $crate::global::with_event_bus_mut(|bus| {
+                    // Kayıt sırasında global bus'a asenkron erişim
+                    $crate::event_bus::RuntimeEventBus::with_instance_mut(|bus| {
                         $(
                             let arc_clone = std::sync::Arc::clone(&service_clone);
                             let event = $event_variant;
 
                             let handler = std::boxed::Box::new(move |args: &dyn $crate::event_bus::RuntimeEventListenerHandlerArg| {
-                                
                                 let arc_inner = std::sync::Arc::clone(&arc_clone);
-                                
-                                // Bus içinde Arc içine alınan veriyi burada downcast ediyoruz.
-                                // Sadece pointer clone edilir, asıl veri kopyalanmaz.
+                                // Veri downcast edilirken Arc<$arg_type> olarak karşılanır
                                 let maybe_shared = args.downcast::<std::sync::Arc<$arg_type>>().map(|a| std::sync::Arc::clone(a));
                                 
                                 std::boxed::Box::pin(async move {
                                     if let Some(shared_data) = maybe_shared {
-                                        // shared_data bir Arc<T>'dir. 
-                                        // Deref sayesinde handler metodun &T alıyorsa sorunsuz çalışır.
+                                        // Downcast başarılıysa servis metodunu çağır
                                         arc_inner.$handler_fn(&shared_data).await;
                                     }
                                 }) as $crate::futures::future::BoxFuture<'static, ()>

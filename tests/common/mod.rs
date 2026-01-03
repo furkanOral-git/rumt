@@ -2,15 +2,14 @@ use rumt::{Unlocked, init_runtime, prelude::*};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// 1. Veri Yapısı (Mutlaka Clone olmalı)
-#[derive(Clone, Debug)]
+
+#[derive(Debug)]
 pub struct TestPayload {
     pub data: String,
 }
 /// Runtime'ı başlatan yardımcı fonksiyon
 pub async fn setup_runtime() {
-    // Rust'ta method chaining (&mut Self) sonrası sahipliği almak için 
-    // değişkeni önce oluşturup sonra metodları çağırmak daha güvenlidir.
+    
     let env = rumt::env::RuntimeModuleEnv::<Unlocked>::new()
     .add_app_info("MyApp", "MyCompany", "com")
     .insert_path("db", "/tmp/test.db")
@@ -40,5 +39,5 @@ impl InventoryService {
 // 3. Makro Çağrısı (Tipin tanımlandığı yerde olmalı)
 rumt::event_handlers! {
     InventoryService;
-    rumt::event_bus::RuntimeEvent::Static { event_name: "order.created".into() } => async handle_order : TestPayload
+    RuntimeEvent::Static { event_name: "order.created".into() } => async handle_order : TestPayload
 }
