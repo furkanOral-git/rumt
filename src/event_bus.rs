@@ -106,8 +106,103 @@ pub trait RuntimeEventListenerInitializer: Sized {
     fn init(self) -> BoxFuture<'static, Arc<dyn RuntimeEventListenerTrait>>;
 }
 
-// --- Makro ---
 
+/// # Event Bus Kullanım Senaryosu: Sipariş ve Bildirim Sistemi
+///
+/// Bu senaryoda, bir sipariş tamamlandığında hem loglama yapan hem de dış dünyaya
+/// asenkron olarak bildirim gönderen bir sistem simüle edilmiştir.
+///
+/// ## 1. Veri Yapılarının Tanımlanması
+///
+/// Olay argümanı olarak kullanılacak struct'lar `RuntimeEventListenerHandlerArg`
+/// trait'ini implemente etmelidir (Makromuz bunu otomatik yapar).
+///
+/// ```rust
+/// #[derive(Clone)]
+/// pub struct OrderEvent {
+///     pub order_id: u64,
+///     pub total_amount: f64,
+///     pub customer_email: String,
+/// }
+/// ```
+///
+/// ## 2. Dinleyici (Listener) Yapısı
+///
+/// İş mantığını yürütecek olan servis. İçerisinde hem senkron hem asenkron metodlar barındırabilir.
+///
+/// ```rust
+/// pub struct NotificationService {
+///     sender_name: String,
+/// }
+///
+/// impl NotificationService {
+///     pub fn new(name: &str) -> Self {
+///         Self { sender_name: name.into() }
+///     }
+///
+///     /// Senkron Handler: Hızlıca log basar.
+///     fn log_order(&self, event: &OrderEvent) {
+///         println!("[{}] Sipariş alındı: ID #{}", self.sender_name, event.order_id);
+///     }
+///
+///     /// Asenkron Handler: Dış servise HTTP isteği atar veya dosyaya yazar.
+///     async fn send_email(&self, event: &OrderEvent) {
+///         // Gerçek bir senaryoda: tokio::time::sleep veya reqwest::post().await
+///         println!("E-posta gönderiliyor: {} adresine {} TL tutarında fatura iletildi.",
+///             event.customer_email, event.total_amount);
+///     }
+/// }
+/// ```
+///
+/// ## 3. Makro ile Bağlantı
+///
+/// `event_handlers!` makrosu ile metodlar olaylara bağlanır.
+///
+/// ```rust
+/// event_handlers! {
+///     NotificationService;
+///     RuntimeEvent::Static { event_name: "order.completed".into() } => log_order : OrderEvent,
+///     RuntimeEvent::Static { event_name: "order.completed".into() } => async send_email : OrderEvent
+/// }
+/// ```
+///
+/// ## 4. Uygulama Akışı
+///
+/// Sistemin asenkron olarak başlatılması ve olayın tetiklenmesi.
+///
+/// ```rust
+/// #[tokio::main]
+/// async fn main() {
+///     // I. Runtime ve Global State Başlatma
+///     let env = RuntimeModuleEnv::new(); // Örnek env
+///     global::init_runtime(env).await;
+///
+///     // II. Servisin Kaydedilmesi
+///     let service = NotificationService::new("Otomatik Servis");
+///     let _controller = NotificationService::init(service).await;
+///
+///     // III. Olayın Tetiklenmesi
+///     let order_info = OrderEvent {
+///         order_id: 12345,
+///         total_amount: 1550.50,
+///         customer_email: "test@example.com".into(),
+///     };
+///
+///     println!("Olay tetikleniyor...");
+///     
+///     // Tüm handler'lar (log_order ve send_email) sırayla çalışır.
+///     global::emit_event(
+///         RuntimeEvent::Static { event_name: "order.completed".into() },
+///         &order_info
+///     ).await;
+///
+///     println!("Tüm süreç tamamlandı.");
+/// }
+/// ```
+///
+/// # Sıralılık Garantisi
+/// Yukarıdaki örnekte `log_order` bittikten sonra `send_email` başlar. `emit_event().await`
+/// satırı ancak her iki işlem de tamamen bittiğinde bir alt satıra geçer.
 #[macro_export]
 macro_rules! event_handlers {
     // Giriş kolları: Async veya normal yazımı destekler
