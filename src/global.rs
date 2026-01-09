@@ -25,7 +25,7 @@ pub async fn init_runtime(env: RuntimeModuleEnv<Locked>) {
 pub fn runtime_env() -> StdMutexGuard<'static, Option<RuntimeModuleEnv<Locked>>> {
     RUNTIME_MODULE_ENV.lock().unwrap()
 }
-
+/// Event Arg mutlaka Debug trait'ini derive etmelidir. Aksi halde rust kodu compile edemez!
 pub async fn emit_event<T: Send + Sync + 'static>(event: RuntimeEvent, arg: T) {
     let mut guard = RUNTIME_EVENT_BUS.lock().await;
     if let Some(bus) = guard.as_mut() {
